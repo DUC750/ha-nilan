@@ -34,7 +34,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
     ):
         entities.append(NilanTopWaterHeater(device))
         entities.append(NilanBottomWaterHeater(device))
-    async_add_entities(entities)
+    async_add_entities(entities, True)
 
 
 class NilanTopWaterHeater(NilanEntity, WaterHeaterEntity):

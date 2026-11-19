@@ -636,7 +636,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
                     for m in maps
                 ]
             )
-    async_add_entities(numbers)
+    async_add_entities(numbers, update_before_add=True)
 
 
 class NilanCTS602Number(NumberEntity, NilanEntity):

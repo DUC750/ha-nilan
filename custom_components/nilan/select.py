@@ -325,7 +325,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
                     for m in maps
                 ]
             )
-    async_add_entities(selects)
+    async_add_entities(selects, update_before_add=True)
 
 
 class NilanCTS602Select(SelectEntity, NilanEntity):

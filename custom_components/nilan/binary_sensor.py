@@ -183,7 +183,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
                     for m in maps
                 ]
             )
-    async_add_entities(binary_sensors)
+    async_add_entities(binary_sensors, update_before_add=True)
 
 
 class NilanCTS602BinarySensor(BinarySensorEntity, NilanEntity):

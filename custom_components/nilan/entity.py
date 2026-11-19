@@ -26,16 +26,24 @@ class NilanEntity(CoordinatorEntity[NilanCoordinator]):
     async def async_read_state(self) -> None:
         """Decode the entity state from the register snapshot (no bus I/O)."""
 
-    async def async_added_to_hass(self) -> None:
-        """Decode the first state and follow every coordinator refresh."""
-        await super().async_added_to_hass()
-        self.async_on_remove(self.coordinator.async_add_reader(self.async_read_state))
+    async def async_update(self) -> None:
+        """Decode from the snapshot.
+
+        Runs before the entity is added (`update_before_add`, as in the former
+        integration, so every attribute exists before the first state write) and on
+        `homeassistant.update_entity`. Polling is off; the coordinator drives updates.
+        """
         try:
             await self.async_read_state()
         except ModbusError as err:
-            # The link dropped between the refresh and this entity; the next
-            # refresh decodes it again.
-            _LOGGER.debug("First decode of %s failed: %s", self.entity_id, err)
+            # The link dropped; the coordinator marks the entity unavailable and the
+            # next refresh decodes it again.
+            _LOGGER.debug("Decoding %s failed: %s", self.entity_id, err)
+
+    async def async_added_to_hass(self) -> None:
+        """Follow every coordinator refresh."""
+        await super().async_added_to_hass()
+        self.async_on_remove(self.coordinator.async_add_reader(self.async_read_state))
 
     @property
     def device_info(self):

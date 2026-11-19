@@ -17,7 +17,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
     for attribute in device.get_assigned("button"):
         if attribute in ("set_time"):
             async_add_entities(
-                [NilanCTS602SyncTimeButton(device)]
+                [NilanCTS602SyncTimeButton(device)], update_before_add=True
             )
 
 

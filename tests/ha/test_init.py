@@ -67,6 +67,20 @@ async def test_setup_creates_the_entities_with_their_unique_ids(
 
     entries = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
     unique_ids = {e.unique_id for e in entries}
+    per_domain = {}
+    for e in entries:
+        per_domain[e.domain] = per_domain.get(e.domain, 0) + 1
+    # Live registry of the former integration (baseline 2026-11-14), per domain.
+    assert per_domain == {
+        "binary_sensor": 12,
+        "button": 1,
+        "climate": 1,
+        "number": 41,
+        "select": 25,
+        "sensor": 33,
+        "switch": 1,
+        "water_heater": 2,
+    }, per_domain
     assert len(entries) == 116
     for unique_id in (
         "supply_air_temperature_t2",

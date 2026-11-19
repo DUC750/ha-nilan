@@ -64,7 +64,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
                     for m in maps
                 ]
             )
-    async_add_entities(switches)
+    async_add_entities(switches, update_before_add=True)
 
 
 class NilanCTS602Switch(SwitchEntity, NilanEntity):

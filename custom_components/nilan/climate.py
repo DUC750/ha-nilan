@@ -97,7 +97,7 @@ async def async_setup_entry(HomeAssistant, config_entry, async_add_entities):
         entities.append(
             NilanClimate(device, supported_features, extra_status_attributes)
         )
-    async_add_entities(entities)
+    async_add_entities(entities, True)
 
 
 class NilanClimate(NilanEntity, ClimateEntity):
