@@ -70,18 +70,21 @@ async def test_setup_creates_the_entities_with_their_unique_ids(
     per_domain = {}
     for e in entries:
         per_domain[e.domain] = per_domain.get(e.domain, 0) + 1
-    # Live registry of the former integration (baseline 2026-11-14), per domain.
-    assert per_domain == {
-        "binary_sensor": 12,
+    # Live registry of the former integration (2026-11-19): 116 entries, of which 17
+    # are stale_restored, i.e. not created by the former integration either
+    # (heating relays 1-3, circulation pump, central heating numbers/selects/sensors,
+    # T8, T13, T14). The integration itself creates 99.
+    expected = {
+        "binary_sensor": 8,
         "button": 1,
         "climate": 1,
-        "number": 41,
-        "select": 25,
-        "sensor": 33,
+        "number": 36,
+        "select": 21,
+        "sensor": 29,
         "switch": 1,
         "water_heater": 2,
-    }, per_domain
-    assert len(entries) == 116
+    }
+    assert per_domain == expected, repr(sorted(per_domain.items()))
     for unique_id in (
         "supply_air_temperature_t2",
         "fresh_air_intake_temperature_t1",
