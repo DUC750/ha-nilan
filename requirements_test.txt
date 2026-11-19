@@ -1,0 +1,6 @@
+# Home Assistant test harness; pulls the matching homeassistant release.
+pytest-homeassistant-custom-component
+# Requirements of the modbus integration this one depends on (HA 2026.11.2).
+pymodbus==3.13.1
+modbus-connection[tmodbus]==4.12.7
+tmodbus==1.1.0

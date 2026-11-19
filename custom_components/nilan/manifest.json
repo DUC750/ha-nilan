@@ -1,0 +1,14 @@
+{
+  "domain": "nilan",
+  "name": "Nilan",
+  "after_dependencies": ["esphome", "usb"],
+  "codeowners": ["@DUC750"],
+  "config_flow": true,
+  "dependencies": ["modbus"],
+  "documentation": "https://github.com/DUC750/ha-nilan",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/DUC750/ha-nilan/issues",
+  "loggers": ["modbus_connection", "tmodbus"],
+  "requirements": [],
+  "version": "2.0.0"
+}

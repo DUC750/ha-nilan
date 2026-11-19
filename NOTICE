@@ -1,0 +1,17 @@
+Nilan integration for Home Assistant (DUC750/ha-nilan)
+
+This product includes software developed by Taneli Veistinen (veista)
+as the Home Assistant integration "nilan", https://github.com/veista/nilan,
+licensed under the Apache License, Version 2.0.
+
+Taken over from veista/nilan, via the modified fork DUC750/nilan:
+  - the CTS602 register map (registers.py),
+  - the entity map and device selection (device_map.py),
+  - the register decoding (device.py, getters and setters),
+  - the entity platforms and translations.
+
+Changed in this repository (see README.md, "What changed"):
+  - transport: Home Assistant's shared Modbus connection
+    (homeassistant/components/modbus/connection.py) instead of the
+    integration's own Modbus hub,
+  - polling: one DataUpdateCoordinator reading the registers in blocks.
