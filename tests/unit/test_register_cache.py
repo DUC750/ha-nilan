@@ -85,6 +85,74 @@ async def test_refused_register_reads_as_none(unit) -> None:
     assert await cache.async_pb_call(30, 3003, 1, "input") is None
 
 
+class LosesAnswers:
+    """Wrap a mock unit so the next `lose` reads time out, then answer again."""
+
+    def __init__(self, unit, lose: int) -> None:
+        self._unit = unit
+        self.lose = lose
+        self.disconnects = 0
+
+    def __getattr__(self, name):
+        return getattr(self._unit, name)
+
+    async def _maybe_lose(self) -> None:
+        if self.lose:
+            self.lose -= 1
+            raise ModbusTimeoutError()
+
+    async def read_holding_registers(self, address: int, count: int) -> list[int]:
+        await self._maybe_lose()
+        return await self._unit.read_holding_registers(address, count)
+
+    async def read_input_registers(self, address: int, count: int) -> list[int]:
+        await self._maybe_lose()
+        return await self._unit.read_input_registers(address, count)
+
+    async def disconnect(self) -> None:
+        self.disconnects += 1
+        await self._unit.disconnect()
+
+
+async def test_single_lost_answer_is_asked_again(unit, caplog) -> None:
+    """One timeout drops the link and asks once more; the refresh succeeds (#4623)."""
+    unit.holding[109] = 1
+    lossy = LosesAnswers(unit, lose=0)
+    cache = RegisterCache(lossy)
+    await cache.async_pb_call(30, 109, 1, "holding")
+
+    unit.holding[109] = 0
+    lossy.lose = 1
+    await cache.async_refresh()
+    assert (await cache.async_pb_call(30, 109, 1, "holding")).registers == [0]
+    assert cache.retries == 1
+    assert lossy.disconnects == 1
+    assert "asking once more" in caplog.text
+
+
+async def test_two_lost_answers_are_raised(unit) -> None:
+    """A second timeout for the same read means the link is down: raise."""
+    unit.input[201] = 1
+    lossy = LosesAnswers(unit, lose=0)
+    cache = RegisterCache(lossy)
+    await cache.async_pb_call(30, 201, 1, "input")
+
+    lossy.lose = 2
+    with pytest.raises(ModbusTimeoutError):
+        await cache.async_refresh()
+    assert cache.retries == 1
+    assert lossy.disconnects == 1
+
+
+async def test_writes_are_not_repeated(unit) -> None:
+    """Only reads are asked again; a write that times out is raised at once."""
+    cache = RegisterCache(unit)
+    unit.fail_requests(ModbusTimeoutError())
+    with pytest.raises(ModbusTimeoutError):
+        await cache.async_pb_call(30, 1100, [1], "write_registers")
+    assert cache.retries == 0
+
+
 @pytest.mark.parametrize("error", [ModbusConnectionError("gone"), ModbusTimeoutError()])
 async def test_link_errors_are_raised(unit, error) -> None:
     """A dead link raises, so the coordinator can mark the update failed."""

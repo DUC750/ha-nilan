@@ -15,10 +15,12 @@ where the registers come from:
   not know inside the block) is read register by register from then on, and a
   register the device refuses on its own reads as `None`, exactly as a failed read
   did before.
-* Link failures (`ModbusConnectionError`, `ModbusTimeoutError`, `ModbusProtocolError`)
-  are raised, so the coordinator marks the update as failed and the entities go
-  unavailable. There is no reconnect logic here: the shared connection reconnects
-  on the next request.
+* A read that times out is asked once more after dropping the link, because the
+  CTS602 link loses a single answer now and then (#4623).
+* Link failures (`ModbusConnectionError`, a second `ModbusTimeoutError`,
+  `ModbusProtocolError`) are raised, so the coordinator marks the update as failed
+  and the entities go unavailable. The shared connection reconnects on the next
+  request.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from dataclasses import dataclass
 import logging
 
 from modbus_connection import ModbusUnit
-from modbus_connection.exceptions import ModbusExceptionError
+from modbus_connection.exceptions import ModbusExceptionError, ModbusTimeoutError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,6 +111,8 @@ class RegisterCache:
         self.on_write: Callable[[], Awaitable[None]] | None = None
         self.requests = 0
         """Read requests sent to the device since start (for diagnostics and tests)."""
+        self.retries = 0
+        """Reads asked a second time after a timeout (for diagnostics and tests)."""
 
     @property
     def wanted(self) -> dict[str, frozenset[int]]:
@@ -129,6 +133,30 @@ class RegisterCache:
         return self._blocks
 
     async def _read(self, space: str, address: int, count: int) -> list[int]:
+        """Read once; after a timeout drop the link and ask exactly once more.
+
+        The CTS602 link loses a single answer now and then (#4623: about 8 of
+        80,000 requests a day), and the next request is answered again. Without
+        a second attempt one lost answer would mark every entity unavailable for
+        a whole interval. The link is dropped first, so a late answer to the
+        first request cannot be taken for the answer to the second. A second
+        timeout is raised: the link is really down.
+        """
+        try:
+            return await self._read_once(space, address, count)
+        except ModbusTimeoutError as err:
+            self.retries += 1
+            _LOGGER.warning(
+                "No answer to %s %s+%s (%s), reconnecting and asking once more",
+                space,
+                address,
+                count,
+                err,
+            )
+            await self._unit.disconnect()
+            return await self._read_once(space, address, count)
+
+    async def _read_once(self, space: str, address: int, count: int) -> list[int]:
         self.requests += 1
         if space == HOLDING:
             return await self._unit.read_holding_registers(address, count)
