@@ -132,8 +132,10 @@ async def test_short_link_drop_keeps_entities_available(
     """A link that is back after a pause does not mark the entities unavailable
     (#4623: the serial proxy's API connection drops for 0.1 to 6 s)."""
     entry = _entry(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    # The cache takes its pauses when it is created, at setup.
+    with patch("custom_components.nilan.register_cache.RETRY_DELAYS", (0.0, 0.0)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
     registry = er.async_get(hass)
     t2 = next(
         e.entity_id
@@ -153,10 +155,7 @@ async def test_short_link_drop_keeps_entities_available(
         return await original(address, count)
 
     mock_unit.input[202] = 1900
-    with (
-        patch("custom_components.nilan.register_cache.RETRY_DELAYS", (0.0, 0.0)),
-        patch.object(mock_unit, "read_input_registers", drop_then_answer),
-    ):
+    with patch.object(mock_unit, "read_input_registers", drop_then_answer):
         async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
         await hass.async_block_till_done()
     assert failures == []
