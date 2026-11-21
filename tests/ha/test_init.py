@@ -157,7 +157,9 @@ async def test_short_link_drop_keeps_entities_available(
     mock_unit.input[202] = 1900
     with patch.object(mock_unit, "read_input_registers", drop_then_answer):
         async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
-        await hass.async_block_till_done()
+        # The scheduled refresh runs as a background task, and the retry pause
+        # yields to the event loop, so wait for background tasks too.
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert failures == []
     assert hass.states.get(t2).state == "19.0"
 
