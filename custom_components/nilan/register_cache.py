@@ -15,24 +15,41 @@ where the registers come from:
   not know inside the block) is read register by register from then on, and a
   register the device refuses on its own reads as `None`, exactly as a failed read
   did before.
-* A read that times out is asked once more after dropping the link, because the
-  CTS602 link loses a single answer now and then (#4623).
-* Link failures (`ModbusConnectionError`, a second `ModbusTimeoutError`,
-  `ModbusProtocolError`) are raised, so the coordinator marks the update as failed
-  and the entities go unavailable. The shared connection reconnects on the next
-  request.
+* A read that fails on the link (`ModbusTimeoutError`, or `ModbusConnectionError`
+  when the port cannot be opened) is asked again after dropping the link, with
+  growing pauses, until `RETRY_BUDGET` is spent. Over an ESPHome serial proxy the
+  link goes down whenever Home Assistant's API connection to the proxy drops; it is
+  back within seconds (#4623).
+* A link failure that outlasts the budget, and `ModbusProtocolError`, are raised, so
+  the coordinator marks the update as failed and the entities go unavailable. The
+  shared connection reconnects on the next request.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable
+import contextlib
 from dataclasses import dataclass
 import logging
 
 from modbus_connection import ModbusUnit
-from modbus_connection.exceptions import ModbusExceptionError, ModbusTimeoutError
+from modbus_connection.exceptions import (
+    ModbusConnectionError,
+    ModbusExceptionError,
+    ModbusTimeoutError,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+LINK_ERRORS = (ModbusTimeoutError, ModbusConnectionError)
+"""Failures of the link rather than of the device: worth asking again."""
+
+RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0)
+"""Pauses before each further attempt of a read that failed on the link."""
+
+RETRY_BUDGET = 30.0
+"""Seconds after the first failure in which a further attempt may still start."""
 
 HOLDING = "holding"
 INPUT = "input"
@@ -99,11 +116,19 @@ class RegisterCache:
         *,
         max_block: int = MAX_BLOCK,
         max_gap: int = MAX_GAP,
+        retry_delays: tuple[float, ...] = RETRY_DELAYS,
+        retry_budget: float = RETRY_BUDGET,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """Create a cache for `unit`."""
         self._unit = unit
         self._max_block = max_block
         self._max_gap = max_gap
+        self._retry_delays = retry_delays
+        self._retry_budget = retry_budget
+        self._sleep = sleep
+        self._clock = clock
         self._wanted: dict[str, set[int]] = {HOLDING: set(), INPUT: set()}
         self._values: dict[tuple[str, int], int | None] = {}
         self._split: set[Block] = set()
@@ -112,7 +137,7 @@ class RegisterCache:
         self.requests = 0
         """Read requests sent to the device since start (for diagnostics and tests)."""
         self.retries = 0
-        """Reads asked a second time after a timeout (for diagnostics and tests)."""
+        """Further attempts of reads that failed on the link (diagnostics, tests)."""
 
     @property
     def wanted(self) -> dict[str, frozenset[int]]:
@@ -133,28 +158,44 @@ class RegisterCache:
         return self._blocks
 
     async def _read(self, space: str, address: int, count: int) -> list[int]:
-        """Read once; after a timeout drop the link and ask exactly once more.
+        """Read; after a link failure drop the link and ask again until it is back.
 
-        The CTS602 link loses a single answer now and then (#4623: about 8 of
-        80,000 requests a day), and the next request is answered again. Without
-        a second attempt one lost answer would mark every entity unavailable for
-        a whole interval. The link is dropped first, so a late answer to the
-        first request cannot be taken for the answer to the second. A second
-        timeout is raised: the link is really down.
+        Over the ESPHome serial proxy of a Connect AUX-2 the link fails whenever
+        Home Assistant's API connection to the proxy drops (#4623: 3 to 9 times a
+        day). The request in flight times out, and opening the port fails until
+        the API connection is back, which took 0.1 to 6 s. Asking again at once
+        fails the same way, so each further attempt waits a growing pause. The
+        link is dropped before each attempt, so a late answer to an earlier
+        request cannot be taken for the answer to this one. When the next pause
+        would start later than `retry_budget` seconds after the first failure,
+        the last error is raised: the link is really down.
         """
         try:
             return await self._read_once(space, address, count)
-        except ModbusTimeoutError as err:
+        except LINK_ERRORS as err:
+            error: Exception = err
+        clock = self._clock or asyncio.get_running_loop().time
+        deadline = clock() + self._retry_budget
+        for delay in self._retry_delays:
+            if clock() + delay > deadline:
+                break
             self.retries += 1
             _LOGGER.warning(
-                "No answer to %s %s+%s (%s), reconnecting and asking once more",
+                "No answer to %s %s+%s (%s), reconnecting and asking again in %.0f s",
                 space,
                 address,
                 count,
-                err,
+                error,
+                delay,
             )
-            await self._unit.disconnect()
-            return await self._read_once(space, address, count)
+            with contextlib.suppress(ModbusConnectionError):
+                await self._unit.disconnect()
+            await self._sleep(delay)
+            try:
+                return await self._read_once(space, address, count)
+            except LINK_ERRORS as err:
+                error = err
+        raise error
 
     async def _read_once(self, space: str, address: int, count: int) -> list[int]:
         self.requests += 1

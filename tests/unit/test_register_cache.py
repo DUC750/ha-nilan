@@ -86,20 +86,32 @@ async def test_refused_register_reads_as_none(unit) -> None:
 
 
 class LosesAnswers:
-    """Wrap a mock unit so the next `lose` reads time out, then answer again."""
+    """Wrap a mock unit so the next reads fail on the link, then answer again.
 
-    def __init__(self, unit, lose: int) -> None:
+    `lose` makes that many reads time out; `failures` lists the errors of the next
+    reads one by one (a lost answer, then a port that cannot be opened, ...).
+    """
+
+    def __init__(self, unit, lose: int = 0) -> None:
         self._unit = unit
+        self.failures: list[Exception] = []
         self.lose = lose
         self.disconnects = 0
+
+    @property
+    def lose(self) -> int:
+        return len(self.failures)
+
+    @lose.setter
+    def lose(self, count: int) -> None:
+        self.failures = [ModbusTimeoutError() for _ in range(count)]
 
     def __getattr__(self, name):
         return getattr(self._unit, name)
 
     async def _maybe_lose(self) -> None:
-        if self.lose:
-            self.lose -= 1
-            raise ModbusTimeoutError()
+        if self.failures:
+            raise self.failures.pop(0)
 
     async def read_holding_registers(self, address: int, count: int) -> list[int]:
         await self._maybe_lose()
@@ -114,11 +126,33 @@ class LosesAnswers:
         await self._unit.disconnect()
 
 
+class FakeTime:
+    """A clock that only moves when the cache sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def make_cache(unit, time: FakeTime | None = None) -> RegisterCache:
+    """A cache whose pauses after link failures take no real time."""
+    time = time or FakeTime()
+    return RegisterCache(unit, sleep=time.sleep, clock=time.clock)
+
+
 async def test_single_lost_answer_is_asked_again(unit, caplog) -> None:
-    """One timeout drops the link and asks once more; the refresh succeeds (#4623)."""
+    """One timeout drops the link and asks again; the refresh succeeds (#4623)."""
     unit.holding[109] = 1
-    lossy = LosesAnswers(unit, lose=0)
-    cache = RegisterCache(lossy)
+    lossy = LosesAnswers(unit)
+    time = FakeTime()
+    cache = make_cache(lossy, time)
     await cache.async_pb_call(30, 109, 1, "holding")
 
     unit.holding[109] = 0
@@ -127,21 +161,72 @@ async def test_single_lost_answer_is_asked_again(unit, caplog) -> None:
     assert (await cache.async_pb_call(30, 109, 1, "holding")).registers == [0]
     assert cache.retries == 1
     assert lossy.disconnects == 1
-    assert "asking once more" in caplog.text
+    assert time.slept == [2.0]
+    assert "asking again in 2 s" in caplog.text
 
 
-async def test_two_lost_answers_are_raised(unit) -> None:
-    """A second timeout for the same read means the link is down: raise."""
+async def test_port_that_cannot_be_opened_is_waited_out(unit) -> None:
+    """The proxy's API connection drops: the answer is lost, opening the port fails
+    until the connection is back, then the read succeeds (#4623, measured 21.11.)."""
     unit.input[201] = 1
-    lossy = LosesAnswers(unit, lose=0)
-    cache = RegisterCache(lossy)
+    lossy = LosesAnswers(unit)
+    time = FakeTime()
+    cache = make_cache(lossy, time)
     await cache.async_pb_call(30, 201, 1, "input")
 
-    lossy.lose = 2
+    unit.input[201] = 7
+    lossy.failures = [
+        ModbusTimeoutError("read_input_registers(201, 1): Response timeout"),
+        ModbusConnectionError("could not open serial port esphome-hass://esphome/x"),
+        ModbusConnectionError("could not open serial port esphome-hass://esphome/x"),
+    ]
+    await cache.async_refresh()
+    assert (await cache.async_pb_call(30, 201, 1, "input")).registers == [7]
+    assert time.slept == [2.0, 4.0, 8.0]
+    assert cache.retries == 3
+    assert lossy.disconnects == 3
+
+
+async def test_link_down_beyond_the_budget_is_raised(unit) -> None:
+    """When the link stays down, no attempt starts after the budget: raise the last
+    error, so the coordinator marks the update failed."""
+    unit.input[201] = 1
+    lossy = LosesAnswers(unit)
+    time = FakeTime()
+    cache = make_cache(lossy, time)
+    await cache.async_pb_call(30, 201, 1, "input")
+
+    lossy.failures = [ModbusTimeoutError()] + [
+        ModbusConnectionError("could not open serial port") for _ in range(10)
+    ]
+    with pytest.raises(ModbusConnectionError):
+        await cache.async_refresh()
+    # Every pause ends within 30 s of the first failure (2 + 4 + 8 + 16 = 30).
+    assert time.slept == [2.0, 4.0, 8.0, 16.0]
+    assert cache.retries == 4
+
+
+async def test_budget_stops_attempts_that_would_start_too_late(unit) -> None:
+    """Attempts that each time out use up the budget sooner (10 s per timeout)."""
+    unit.input[201] = 1
+    lossy = LosesAnswers(unit)
+    time = FakeTime()
+    cache = make_cache(lossy, time)
+    await cache.async_pb_call(30, 201, 1, "input")
+
+    original = lossy._maybe_lose
+
+    async def slow_timeout() -> None:
+        if lossy.failures:
+            time.now += 10.0
+        await original()
+
+    lossy._maybe_lose = slow_timeout
+    lossy.lose = 10
     with pytest.raises(ModbusTimeoutError):
         await cache.async_refresh()
-    assert cache.retries == 1
-    assert lossy.disconnects == 1
+    # First failure at t=10 -> deadline 40; 12+10=22, 26+10=36, then 36+8 > 40.
+    assert time.slept == [2.0, 4.0]
 
 
 async def test_writes_are_not_repeated(unit) -> None:
@@ -157,7 +242,7 @@ async def test_writes_are_not_repeated(unit) -> None:
 async def test_link_errors_are_raised(unit, error) -> None:
     """A dead link raises, so the coordinator can mark the update failed."""
     unit.input[201] = 1
-    cache = RegisterCache(unit)
+    cache = make_cache(unit)
     await cache.async_pb_call(30, 201, 1, "input")
     unit.fail_requests(error)
     with pytest.raises(type(error)):
