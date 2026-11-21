@@ -17,6 +17,17 @@ def auto_enable_custom_integrations(enable_custom_integrations) -> Iterator[None
     yield
 
 
+@pytest.fixture(autouse=True)
+def no_retry_pauses() -> Iterator[None]:
+    """Raise link failures at once instead of waiting up to 30 s of real time.
+
+    The waiting itself is covered by tests/unit/test_register_cache.py; a test here
+    that needs it patches `RETRY_DELAYS` itself.
+    """
+    with patch("custom_components.nilan.register_cache.RETRY_DELAYS", ()):
+        yield
+
+
 @pytest.fixture
 def mock_unit() -> Iterator[MockModbusUnit]:
     """A VP 18comp with the baseline registers behind Home Assistant's connection."""

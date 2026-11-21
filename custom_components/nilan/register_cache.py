@@ -116,8 +116,8 @@ class RegisterCache:
         *,
         max_block: int = MAX_BLOCK,
         max_gap: int = MAX_GAP,
-        retry_delays: tuple[float, ...] = RETRY_DELAYS,
-        retry_budget: float = RETRY_BUDGET,
+        retry_delays: tuple[float, ...] | None = None,
+        retry_budget: float | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -125,8 +125,8 @@ class RegisterCache:
         self._unit = unit
         self._max_block = max_block
         self._max_gap = max_gap
-        self._retry_delays = retry_delays
-        self._retry_budget = retry_budget
+        self._retry_delays = RETRY_DELAYS if retry_delays is None else retry_delays
+        self._retry_budget = RETRY_BUDGET if retry_budget is None else retry_budget
         self._sleep = sleep
         self._clock = clock
         self._wanted: dict[str, set[int]] = {HOLDING: set(), INPUT: set()}

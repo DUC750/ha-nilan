@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from modbus_connection import ModbusSerialParams, ModbusTcpParams
-from modbus_connection.exceptions import ModbusConnectionError
+from modbus_connection.exceptions import ModbusConnectionError, ModbusTimeoutError
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -122,6 +123,43 @@ async def test_link_loss_makes_entities_unavailable_and_recovers(
     mock_unit.input[202] = 1900
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=62))
     await hass.async_block_till_done()
+    assert hass.states.get(t2).state == "19.0"
+
+
+async def test_short_link_drop_keeps_entities_available(
+    hass: HomeAssistant, mock_unit
+) -> None:
+    """A link that is back after a pause does not mark the entities unavailable
+    (#4623: the serial proxy's API connection drops for 0.1 to 6 s)."""
+    entry = _entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    t2 = next(
+        e.entity_id
+        for e in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if e.unique_id == "supply_air_temperature_t2"
+    )
+
+    failures = [
+        ModbusTimeoutError("lost answer"),
+        ModbusConnectionError("could not open serial port"),
+    ]
+    original = mock_unit.read_input_registers
+
+    async def drop_then_answer(address: int, count: int) -> list[int]:
+        if failures:
+            raise failures.pop(0)
+        return await original(address, count)
+
+    mock_unit.input[202] = 1900
+    with (
+        patch("custom_components.nilan.register_cache.RETRY_DELAYS", (0.0, 0.0)),
+        patch.object(mock_unit, "read_input_registers", drop_then_answer),
+    ):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+        await hass.async_block_till_done()
+    assert failures == []
     assert hass.states.get(t2).state == "19.0"
 
 
